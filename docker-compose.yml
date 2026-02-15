@@ -1,0 +1,51 @@
+name: osu-replay-viewer
+
+services:
+  osu-replay-viewer-server:
+    container_name: osu-replay-viewer-server
+    build: .
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - DISPLAY=:0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - XAUTHORITY=/tmp/.Xauthority
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /etc/X11/xauth:/etc/X11/xauth:ro
+      - /dev/dri:/dev/dri:rw
+      - /dev/nvidia0:/dev/nvidia0:rw
+      - /dev/nvidiactl:/dev/nvidiactl:rw
+      - ${RENDERS_DIR:-./renders}:/app/renders:rw
+      - ${FAILED_REPLAYS_DIR:-./failed_replays}:/app/failed_replays:rw
+      - ${ORV_DATA_DIR:-./orv-data}:/root/.local/share/osu_replay_viewer:rw
+    ipc: host
+    privileged: true
+    networks:
+      - orv-network
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: osu-replay-viewer-database
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./postgres_data}:/var/lib/postgresql/data
+    networks:
+      - orv-network
+
+networks:
+  orv-network:
+    driver: bridge
