@@ -9,6 +9,7 @@ FFMPEG_MODE = "Pipe"
 
 RENDERER = "Auto"
 PIXEL_FORMAT = "YUV420"
+YUV_COLOR_SPACE = "BT709"
 
 class Config:
     resolution: str = "1280x720"
@@ -39,7 +40,8 @@ def generate_config(config: Config) -> str:
             "video_encoder_bitrate": FFMPEG_BITRATE
         },
         "output_options": {
-            "pixel_format": PIXEL_FORMAT
+            "pixel_format": PIXEL_FORMAT,
+            "yuv_color_space": YUV_COLOR_SPACE
         },
         "game_settings": {
             "skip_intro": config.skip_intro,
