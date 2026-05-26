@@ -13,8 +13,10 @@ from pathlib import Path
 import traceback
 from datetime import datetime
 from typing import Dict, Optional, List
+import os
 import orv_config_manager
 from database import db
+from providers import build_beatmap_providers
 
 # Configure logging
 logging.basicConfig(
@@ -27,20 +29,6 @@ app = FastAPI()
 
 RENDER_OUTPUT_DIR = "renders"
 TEMP_DIR = "temp"
-
-BEATMAP_MIRRORS_METADATA = [
-    "https://osu.direct",
-    "https://catboy.best"
-]
-
-BEATMAP_MIRRORS_DOWNLOAD = [
-    "https://osu.direct",
-    "https://api.nerinyan.moe",
-
-    # mino and gatari have SOO much beatmaps being outdated... even ranked beatmaps can be outdated there, so maybe we should not use it for downloading
-    "https://osugatari.ru",
-    "https://catboy.best",
-]
 
 ORV_EXEC = r"/app/osu-replay-viewer/osu-replay-viewer"
 
@@ -93,6 +81,13 @@ class RenderManager:
         self.render_queue = asyncio.Queue()
         self.is_processing = False
         self.process_task = None
+
+        self._metadata_providers, self._beatmapset_providers = build_beatmap_providers()
+        logger.info(
+            "Beatmap providers: metadata=%s, beatmapset=%s",
+            [p.name for p in self._metadata_providers],
+            [p.name for p in self._beatmapset_providers],
+        )
 
     def _get_skin_filename_key(self, skin: str, custom: bool) -> str:
         return f"custom_{skin}" if custom else skin
@@ -186,13 +181,15 @@ class RenderManager:
     async def _process_render(self, render_id: int, replay_path: str, config_path: str, skin: str, custom_skin: bool):
         logger.info(f"Processing render {render_id}")
         # Process replay and download beatmap
-        beatmap_path = await self.process_replay_file(replay_path)
+        beatmap_path, beatmapset_id, beatmapset_provider_idx = await self.process_replay_file(
+            replay_path
+        )
 
         # Generate output path
         output_path = Path(RENDER_OUTPUT_DIR) / f"{render_id}.mp4"
 
         # Build render command
-        cmd = [
+        base_cmd = [
             ORV_EXEC, "--yes",
             "-ex",
             "-i", "file", str(replay_path),
@@ -201,9 +198,6 @@ class RenderManager:
             "-c", str(config_path)
         ]
 
-        if beatmap_path:
-            cmd.extend(["-osz", str(beatmap_path)])
-
         skin_filename_key = None
         skin_id = None
         if skin:
@@ -211,21 +205,71 @@ class RenderManager:
             skin_filename_key = self._get_skin_filename_key(skin, custom_skin)
             skin_id = await db.get_skin_id(skin_filename_key)
             if skin_id:
-                cmd.extend(["-s", "id", str(skin_id)])
+                base_cmd.extend(["-s", "id", str(skin_id)])
             else:
                 skin_path = await self.download_skin(skin, custom_skin)
-                cmd.extend(["-s", "import", str(skin_path)])
+                base_cmd.extend(["-s", "import", str(skin_path)])
 
-        logger.info(f"Starting render for {render_id}")
-        stdout, stderr, proc, timed_out = await run_with_timeout(cmd, timeout=900)
+        attempt = 0
+        stdout = b""
+        stderr = b""
+        proc = None
+        timed_out = False
+
+        while True:
+            attempt += 1
+            cmd = list(base_cmd)
+            if beatmap_path:
+                cmd.extend(["-osz", str(beatmap_path)])
+
+            logger.info(
+                "Starting render for %s (attempt=%s beatmapset_provider=%s)",
+                render_id,
+                attempt,
+                self._beatmapset_providers[beatmapset_provider_idx].name
+                if beatmap_path and beatmapset_provider_idx < len(self._beatmapset_providers)
+                else "none",
+            )
+            stdout, stderr, proc, timed_out = await run_with_timeout(cmd, timeout=900)
+
+            if timed_out:
+                raise RenderException("Renderer killed due to 15min timeout", stdout, stderr)
+
+            stderr_text = stderr.decode(errors="ignore") if stderr else ""
+            if "Beatmap not found" in stderr_text and beatmap_path and beatmapset_id is not None:
+                next_idx = beatmapset_provider_idx + 1
+                if next_idx >= len(self._beatmapset_providers):
+                    raise RenderException(
+                        "Renderer error: Beatmap not found in beatmapset. Tried all beatmapset providers.",
+                        stdout,
+                        stderr,
+                    )
+
+                # Clean up old .osz and retry with next provider(s).
+                try:
+                    if Path(beatmap_path).exists():
+                        Path(beatmap_path).unlink()
+                except Exception:
+                    pass
+
+                logger.warning(
+                    "Beatmap not found in downloaded beatmapset_id=%s; switching beatmapset provider %s -> %s",
+                    beatmapset_id,
+                    self._beatmapset_providers[beatmapset_provider_idx].name,
+                    self._beatmapset_providers[next_idx].name,
+                )
+                beatmap_path, beatmapset_provider_idx = await self._download_beatmapset_with_fallback(
+                    beatmapset_id, start_at=next_idx
+                )
+                continue
+
+            break
 
         await self._store_imported_metadata(stdout, skin_filename_key if skin and not skin_id else None)
         logger.info(f"Imported metadata storage completed for render {render_id}")
 
-        if timed_out:
-            raise RenderException("Renderer killed due to 15min timeout", stdout, stderr)
-        elif "Beatmap not found" in stderr.decode(errors="ignore"):
-            raise RenderException("Renderer error: Beatmap not found in beatmapset. Probably beatmap is outdated on external beatmaps mirror.", stdout, stderr)
+        if "Beatmap not found" in (stderr.decode(errors="ignore") if stderr else ""):
+            raise RenderException("Renderer error: Beatmap not found in beatmapset.", stdout, stderr)
         elif proc.returncode != 0 or not output_path.exists():
             raise RenderException(f"Unknown renderer error", stdout, stderr)
 
@@ -300,7 +344,38 @@ class RenderManager:
         
         return path
 
-    async def process_replay_file(self, replay_path: str) -> Optional[Path]:
+    async def _download_beatmapset_with_fallback(
+        self, beatmapset_id: int, start_at: int = 0
+    ) -> tuple[Path, int]:
+        beatmap_path = Path(TEMP_DIR) / f"{uuid.uuid4()}.osz"
+
+        timeout = aiohttp.ClientTimeout(total=40, connect=10, sock_read=40)
+        headers = {}
+        ua = (os.getenv("USER_AGENT") or "").strip()
+        if ua:
+            headers["User-Agent"] = ua
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for idx in range(start_at, len(self._beatmapset_providers)):
+                provider = self._beatmapset_providers[idx]
+                try:
+                    logger.info(
+                        "Downloading beatmapset %s via %s", beatmapset_id, provider.name
+                    )
+                    ok = await provider.download_beatmapset(
+                        session, beatmapset_id, beatmap_path
+                    )
+                    if not ok:
+                        raise Exception("provider refused (not found / bad status)")
+                    logger.info("Beatmap saved: %s (provider=%s)", beatmap_path, provider.name)
+                    return beatmap_path, idx
+                except Exception as e:
+                    logger.error(f"Error downloading from {provider.name}: {e}")
+                    continue
+
+        raise RenderException("Failed to download beatmapset from all providers")
+
+    async def process_replay_file(self, replay_path: str) -> tuple[Optional[Path], Optional[int], int]:
         logger.info(f"Parsing replay: {replay_path}")
         try:
             replay = Replay.from_path(replay_path)
@@ -313,52 +388,40 @@ class RenderManager:
         imported = await db.get_imported_beatmap(replay.beatmap_hash)
         if imported:
             logger.info(f"Beatmap hash found in import DB, skipping download: {replay.beatmap_hash}")
-            return None
+            return None, None, 0
 
-        beatmapset_id = None
-        beatmap_path = None
+        beatmapset_id: Optional[int] = None
 
-        for mirror in BEATMAP_MIRRORS_METADATA:
-            async with aiohttp.ClientSession() as session:
-                logger.info(f"Trying with {mirror}")
+        timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_read=20)
+        headers = {}
+        ua = (os.getenv("USER_AGENT") or "").strip()
+        if ua:
+            headers["User-Agent"] = ua
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for provider in self._metadata_providers:
+                logger.info(f"Trying metadata provider: {provider.name}")
                 try:
-                    async with session.get(f"{mirror}/api/v2/md5/{replay.beatmap_hash}") as resp:
-                        if resp.status != 200:
-                            logger.warning(f"Mirror {mirror} returned {resp.status}")
-                            continue
-
-                        data = await resp.json()
-
-                        beatmapset_id = data['beatmapset_id']
-                        beatmap_path = Path(TEMP_DIR) / f"{uuid.uuid4()}.osz"
-                        logger.info(f"Got new beatmapset_id: {beatmapset_id}")
-                        break
-                except RenderException as e:
-                    raise e
+                    res = await provider.lookup_by_md5(session, replay.beatmap_hash)
+                    if not res:
+                        continue
+                    beatmapset_id = res.beatmapset_id
+                    logger.info(
+                        "Resolved md5 via %s: beatmapset_id=%s beatmap_id=%s",
+                        res.provider or provider.name,
+                        res.beatmapset_id,
+                        res.beatmap_id,
+                    )
+                    break
                 except Exception as e:
-                    logger.error(f"Error getting metadata from {mirror}: {e}")
+                    logger.error(f"Error getting metadata from {provider.name}: {e}")
                     continue
 
-        if not beatmapset_id: 
-            raise RenderException("Could not get beatmap info from api")
+            if not beatmapset_id:
+                raise RenderException("Could not get beatmap info from metadata providers")
 
-        for mirror in BEATMAP_MIRRORS_DOWNLOAD:
-            async with aiohttp.ClientSession() as session:
-                try:
-                    logger.info(f"Downloading beatmap {beatmapset_id} from {mirror}")
-                    async with session.get(f"{mirror}/d/{beatmapset_id}") as dl_resp:
-                        if dl_resp.status != 200:
-                            raise Exception(f"Response {dl_resp.status}")
-                        content = await dl_resp.read()
-                        async with aiofiles.open(beatmap_path, "wb") as f:
-                            await f.write(content)
-                        logger.info(f"Beatmap saved: {beatmap_path} ({len(content)} bytes)")
-                        return beatmap_path
-                except Exception as e:
-                    logger.error(f"Error downloading from {mirror}: {e}")
-                    continue
-
-        raise RenderException("Failed to download beatmap")
+        beatmap_path, idx = await self._download_beatmapset_with_fallback(beatmapset_id, start_at=0)
+        return beatmap_path, beatmapset_id, idx
 
     async def delete_after_delay(self, output_path: Path, render_id: int):
         await asyncio.sleep(900)  # 15 minutes

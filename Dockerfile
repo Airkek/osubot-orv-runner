@@ -46,8 +46,8 @@ RUN if [ "${OSU_VIEWER_VERSION}" = "latest" ]; then \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY src/* /app/
+# Copy application files (include subdirectories like src/providers)
+COPY src/ /app/
 
 # Default command
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9732", "--loop", "asyncio"]
