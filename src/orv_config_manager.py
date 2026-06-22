@@ -6,6 +6,7 @@ FFMPEG_EXEC = "ffmpeg"
 FFMPEG_LIBS = ""
 FFMPEG_BITRATE = "100M"
 FFMPEG_MODE = "Pipe"
+FFMPEG_CUDA = False
 
 RENDERER = "Auto"
 PIXEL_FORMAT = "YUV420"
@@ -37,7 +38,8 @@ def generate_config(config: Config) -> str:
             "ffmpeg_executable": FFMPEG_EXEC,
             "video_encoder": FFMPEG_CODEC,
             "video_encoder_preset": FFMPEG_PRESET,
-            "video_encoder_bitrate": FFMPEG_BITRATE
+            "video_encoder_bitrate": FFMPEG_BITRATE,
+            "use_cuda_if_possible": FFMPEG_CUDA
         },
         "output_options": {
             "pixel_format": PIXEL_FORMAT,
