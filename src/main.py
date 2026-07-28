@@ -12,11 +12,11 @@ import asyncio
 from pathlib import Path
 import traceback
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 import os
 import orv_config_manager
-from database import db
 from providers import build_beatmap_providers
+from realm_reader import OsuLazerRealmReader
 
 # Configure logging
 logging.basicConfig(
@@ -30,7 +30,7 @@ app = FastAPI()
 RENDER_OUTPUT_DIR = "renders"
 TEMP_DIR = "temp"
 
-ORV_EXEC = r"/app/osu-replay-viewer/osu-replay-viewer"
+ORV_EXEC = os.getenv("ORV_EXEC", r"/app/osu-replay-viewer/osu-replay-viewer")
 
 Path(RENDER_OUTPUT_DIR).mkdir(exist_ok=True)
 
@@ -83,6 +83,7 @@ class RenderManager:
         self.process_task = None
 
         self._metadata_providers, self._beatmapset_providers = build_beatmap_providers()
+        self._realm_reader = OsuLazerRealmReader(ORV_EXEC)
         logger.info(
             "Beatmap providers: metadata=%s, beatmapset=%s",
             [p.name for p in self._metadata_providers],
@@ -92,59 +93,6 @@ class RenderManager:
     def _get_skin_filename_key(self, skin: str, custom: bool) -> str:
         return f"custom_{skin}" if custom else skin
 
-    async def _store_imported_metadata(self, stdout: bytes, skin_filename_key: Optional[str]):
-        if not stdout:
-            return
-
-        text = stdout.decode(errors="ignore") if stdout else ""
-        skin_id = None
-        skin_name = None
-        beatmapset_online_id = None
-        beatmap_hashes: List[str] = []
-        beatmap_md5_hashes: List[str] = []
-        beatmap_online_ids: List[str] = []
-
-        for line in text.splitlines():
-            if line.startswith("IMPORTED_SKIN_ID::"):
-                skin_id = line.split("::", 1)[1].strip()
-            elif line.startswith("IMPORTED_SKIN_NAME::"):
-                skin_name = line.split("::", 1)[1].strip()
-            elif line.startswith("IMPORTED_BEATMAPSET_ONLINE_ID::"):
-                beatmapset_online_id = line.split("::", 1)[1].strip()
-            elif line.startswith("IMPORTED_BEATMAPSET_BEATMAP_HASHES::"):
-                hashes = line.split("::", 1)[1].strip()
-                beatmap_hashes = [h for h in hashes.split(",") if h]
-            elif line.startswith("IMPORTED_BEATMAPSET_BEATMAP_MD5HASHES::"):
-                md5_hashes = line.split("::", 1)[1].strip()
-                beatmap_md5_hashes = [h for h in md5_hashes.split(",") if h]
-            elif line.startswith("IMPORTED_BEATMAPSET_BEATMAP_ONLINE_IDS::"):
-                ids = line.split("::", 1)[1].strip()
-                beatmap_online_ids = [i for i in ids.split(",") if i]
-
-        if skin_filename_key and skin_id:
-            try:
-                await db.save_skin_info(skin_filename_key, skin_name, skin_id)
-                logger.info(f"Saved imported skin to DB: {skin_filename_key} -> {skin_id}")
-            except Exception as e:
-                logger.error(f"Failed to save imported skin: {e}")
-
-        if beatmapset_online_id and beatmap_hashes and beatmap_online_ids:
-            if len(beatmap_hashes) != len(beatmap_online_ids):
-                logger.warning("Imported beatmap hashes/online IDs count mismatch")
-                return
-            for i, (beatmap_hash, beatmap_online_id) in enumerate(zip(beatmap_hashes, beatmap_online_ids)):
-                md5_hash = beatmap_md5_hashes[i] if i < len(beatmap_md5_hashes) else None
-                try:
-                    await db.save_imported_beatmap(
-                        beatmap_hash,
-                        int(beatmap_online_id),
-                        int(beatmapset_online_id),
-                        md5_hash
-                    )
-                    logger.info(f"Saved imported beatmap to DB: {beatmap_hash} -> {md5_hash} -> {beatmap_online_id} -> {beatmapset_online_id}")
-                except Exception as e:
-                    logger.error(f"Failed to save imported beatmap {beatmap_hash}: {e}")
-        
     async def start_processing(self):
         self.is_processing = True
         self.process_task = asyncio.create_task(self._process_queue())
@@ -191,7 +139,6 @@ class RenderManager:
         # Build render command
         base_cmd = [
             ORV_EXEC, "--yes",
-            "-ex",
             "-i", "file", str(replay_path),
             "-R",
             "-O", str(output_path),
@@ -203,7 +150,7 @@ class RenderManager:
         if skin:
             logger.info(f"Using skin: {skin} (custom={custom_skin})")
             skin_filename_key = self._get_skin_filename_key(skin, custom_skin)
-            skin_id = await db.get_skin_id(skin_filename_key)
+            skin_id = await self._realm_reader.find_skin_id(skin_filename_key)
             if skin_id:
                 base_cmd.extend(["-s", "id", str(skin_id)])
             else:
@@ -264,9 +211,6 @@ class RenderManager:
                 continue
 
             break
-
-        await self._store_imported_metadata(stdout, skin_filename_key if skin and not skin_id else None)
-        logger.info(f"Imported metadata storage completed for render {render_id}")
 
         if "Beatmap not found" in (stderr.decode(errors="ignore") if stderr else ""):
             raise RenderException("Renderer error: Beatmap not found in beatmapset.", stdout, stderr)
@@ -385,9 +329,9 @@ class RenderManager:
              logger.error(f"Failed to parse replay: {e}")
              raise e
 
-        imported = await db.get_imported_beatmap(replay.beatmap_hash)
+        imported = await self._realm_reader.has_beatmap(replay.beatmap_hash)
         if imported:
-            logger.info(f"Beatmap hash found in import DB, skipping download: {replay.beatmap_hash}")
+            logger.info(f"Beatmap hash found in osu!lazer Realm, skipping download: {replay.beatmap_hash}")
             return None, None, 0
 
         beatmapset_id: Optional[int] = None
@@ -439,12 +383,10 @@ render_manager = RenderManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Application starting up")
-    await db.connect()
     await render_manager.start_processing()
     yield
     logger.info("Application shutting down")
     await render_manager.stop_processing()
-    await db.close()
     for file in Path(RENDER_OUTPUT_DIR).glob("*.mp4"):
         file.unlink()
     for file in Path(TEMP_DIR).glob("*.json"):
@@ -472,7 +414,8 @@ async def create_render(
         skip: bool = Form(True),
         globalVolume: int = Form(50),
         musicVolume: int = Form(50),
-        hitsoundVolume: int = Form(50)
+        hitsoundVolume: int = Form(50),
+        scrollSpeed: float = Form(26.0, ge=1.0, le=40.0)
 ):
     # Save replay file
     Path(TEMP_DIR).mkdir(exist_ok=True)
@@ -494,6 +437,7 @@ async def create_render(
     config.master_volume = globalVolume / 100
     config.music_volume = musicVolume / 100
     config.effects_volume = hitsoundVolume / 100
+    config.scroll_speed = scrollSpeed
 
     async with aiofiles.open(config_path, "w") as f:
         content = orv_config_manager.generate_config(config)

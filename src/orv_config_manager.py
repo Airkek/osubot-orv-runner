@@ -16,13 +16,14 @@ class Config:
     resolution: str = "1280x720"
     fps: int = 60
     background_dim: float = 0.75
+    scroll_speed: float = 26.0
     show_storyboard_or_video: bool = True
     use_beatmap_hitsounds: bool = False
     use_beatmap_skin: bool = False
     use_beatmap_colors: bool = False
-    music_volume: bool = 0.5
-    effects_volume: bool = 0.5
-    master_volume: bool = 0.5
+    music_volume: float = 0.5
+    effects_volume: float = 0.5
+    master_volume: float = 0.5
     skip_intro: bool = True
 
 def generate_config(config: Config) -> str:
@@ -48,6 +49,7 @@ def generate_config(config: Config) -> str:
         "game_settings": {
             "skip_intro": config.skip_intro,
             "background_dim": config.background_dim,
+            "scroll_speed": config.scroll_speed,
             "show_storyboard_or_video": config.show_storyboard_or_video,
             "use_beatmap_hitsounds": config.use_beatmap_hitsounds,
             "use_beatmap_skin": config.use_beatmap_skin,
