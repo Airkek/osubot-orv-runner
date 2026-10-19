@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     libglvnd0 \
     libglvnd-dev \
     libgl1 \
+    libicu70 \
     wget \
     curl \
     ca-certificates \
@@ -24,7 +25,7 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 WORKDIR /app
 
-ARG OSU_VIEWER_VERSION=latest
+ARG OSU_VIEWER_VERSION=v0.10.1
 ARG OSU_VIEWER_BUILD=Debug
 ARG OSU_VIEWER_ARCH=x64
 

@@ -3,6 +3,9 @@
 
 This project provides an API for rendering osu! replays using
 [osu-replay-viewer-continued](https://github.com/Airkek/osu-replay-viewer-continued).
+The Docker image uses viewer [v0.10.1](https://github.com/Airkek/osu-replay-viewer-continued/releases/tag/v0.10.1),
+based on stable osu!lazer 2026.1005.0 and .NET 10. The viewer archive is self-contained;
+the Docker image includes its ICU dependency, so no separate .NET installation is required.
 It was originally intended to be used together with
 [osubot-telegram](https://github.com/Airkek/osubot-telegram).
 
@@ -16,8 +19,15 @@ It was originally intended to be used together with
 
 2. Run with Docker:
    ```bash
-   docker-compose up -d
+   docker-compose up -d --build
    ```
+
+   Run the same command after pulling updates to rebuild the image with the pinned viewer release.
+
+The default viewer build remains `Debug` on Linux x64. Its Realm database is now
+`client_52.realm`; the viewer migrates an existing `client_51.realm` on first startup.
+Automatic database discovery supports both versions. If you set `OSU_LAZER_REALM_PATH`
+explicitly, update it to the new filename after migration.
 
 ## Configuration
 
