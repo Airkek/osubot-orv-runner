@@ -13,6 +13,8 @@ class BeatmapLookupResult:
     beatmapset_id: int
     beatmap_id: Optional[int] = None
     provider: str = ""
+    status: Optional[str] = None
+    has_video: Optional[bool] = None
 
 
 class IMetadataProvider(ABC):
@@ -31,6 +33,12 @@ class IMetadataProvider(ABC):
 
 class IBeatmapsetProvider(ABC):
     name: str
+
+    @abstractmethod
+    async def probe_beatmapset(
+        self, session: aiohttp.ClientSession, beatmapset_id: int
+    ) -> bool:
+        """Check that the provider starts returning an archive without downloading it fully"""
 
     @abstractmethod
     async def download_beatmapset(

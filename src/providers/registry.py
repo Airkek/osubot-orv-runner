@@ -7,9 +7,43 @@ from .mirrors import (
     MirrorDownloadBeatmapsetProvider,
     MirrorV2Md5MetadataProvider,
     NerinyanV2LookupMetadataProvider,
-    OsuOfficialV1MetadataProvider,
+    OsuOfficialV2MetadataProvider,
 )
-from .types import IBeatmapsetProvider, IMetadataProvider
+from .types import BeatmapLookupResult, IBeatmapsetProvider, IMetadataProvider
+
+
+def _preferred_provider_names(metadata: BeatmapLookupResult) -> List[str]:
+    preferred = []
+    if metadata.status in ("ranked", "approved", "loved"):
+        preferred = ["osu.direct", "Nekoha"]
+    elif metadata.status in ("graveyard", "pending", "wip"):
+        preferred = ["Nekoha", "osu.direct"]
+    if metadata.has_video is True:
+        preferred.insert(0, "Mirria")
+    return preferred
+
+
+def order_beatmapset_providers(
+    providers: List[IBeatmapsetProvider], metadata: BeatmapLookupResult
+) -> List[IBeatmapsetProvider]:
+    preferred = _preferred_provider_names(metadata)
+
+    priorities = {name: index for index, name in enumerate(preferred)}
+    priorities["Hinamizawa"] = len(preferred) + 1
+    return sorted(providers, key=lambda provider: priorities.get(provider.name, len(preferred)))
+
+
+def beatmapset_provider_groups(
+    providers: List[IBeatmapsetProvider], metadata: BeatmapLookupResult
+) -> List[List[IBeatmapsetProvider]]:
+    preferred = _preferred_provider_names(metadata)
+    ordered = order_beatmapset_providers(providers, metadata)
+    groups = [[provider] for provider in ordered if provider.name in preferred]
+    remaining = [p for p in ordered if p.name not in preferred and p.name != "Hinamizawa"]
+    if remaining:
+        groups.append(remaining)
+    groups.extend([provider] for provider in ordered if provider.name == "Hinamizawa")
+    return groups
 
 
 def build_beatmap_providers() -> Tuple[List[IMetadataProvider], List[IBeatmapsetProvider]]:
@@ -19,10 +53,10 @@ def build_beatmap_providers() -> Tuple[List[IMetadataProvider], List[IBeatmapset
     metadata: List[IMetadataProvider] = []
     beatmapsets: List[IBeatmapsetProvider] = []
 
-    osu_v1_key = (os.getenv("OSU_API_V1_KEY") or "").strip()
-    if osu_v1_key:
-        # Only register if key specified.
-        metadata.append(OsuOfficialV1MetadataProvider(api_key=osu_v1_key))
+    client_id = (os.getenv("OSU_API_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("OSU_API_CLIENT_SECRET") or "").strip()
+    if client_id and client_secret:
+        metadata.append(OsuOfficialV2MetadataProvider(client_id, client_secret))
 
     # Nerinyan metadata (osu! API v2-like checksum lookup).
     metadata.append(NerinyanV2LookupMetadataProvider())
@@ -33,6 +67,11 @@ def build_beatmap_providers() -> Tuple[List[IMetadataProvider], List[IBeatmapset
     )
     metadata.append(
         MirrorV2Md5MetadataProvider(base_url="https://catboy.best", name="Mino")
+    )
+    metadata.append(
+        MirrorV2Md5MetadataProvider(
+            base_url="https://mirror.hinamizawa.ai", name="Hinamizawa"
+        )
     )
 
     # Download providers (all supported mirrors).
@@ -49,6 +88,36 @@ def build_beatmap_providers() -> Tuple[List[IMetadataProvider], List[IBeatmapset
     )
     beatmapsets.append(
         MirrorDownloadBeatmapsetProvider(base_url="https://catboy.best", name="Mino")
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(
+            base_url="https://mirror.nekoha.moe", name="Nekoha",
+            download_path="api/download",
+        )
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(
+            base_url="https://beatconnect.io", name="BeatConnect", download_path="b",
+        )
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(
+            base_url="https://txy1.sayobot.cn", name="Sayobot",
+            download_path="beatmaps/download/full",
+        )
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(
+            base_url="https://osudl.org", name="osu!dl", download_path="s",
+        )
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(base_url="https://mirror.lisek.cc", name="Mirria")
+    )
+    beatmapsets.append(
+        MirrorDownloadBeatmapsetProvider(
+            base_url="https://mirror.hinamizawa.ai/api/v1/hinai", name="Hinamizawa"
+        )
     )
 
     return metadata, beatmapsets

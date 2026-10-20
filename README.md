@@ -40,14 +40,68 @@ Environment variables can be set in `.env` file:
 |----------|-------------|---------|
 | `OSU_API_CLIENT_ID` | osu! API v2 OAuth application Client ID | unset |
 | `OSU_API_CLIENT_SECRET` | osu! API v2 OAuth application Client Secret | unset |
-| `OSU_API_V1_KEY` | Optional API v1 key for beatmap metadata lookup | unset |
 
 Register an [osu! OAuth application](https://osu.ppy.sh/home/account/edit#new-oauth-application)
 and put its Client ID and Client Secret in `.env`. Docker Compose passes them to the runner,
 and the viewer subprocess inherits them as environment variables. They are not written into
 per-render JSON configs or accepted from render requests. The viewer uses the API v2
 `client_credentials` grant with `public` scope; a saved osu!lazer login is not required.
-The API v1 metadata key is independent and does not enable the viewer leaderboard.
+The runner uses the same credentials to look up beatmaps by MD5 through API v2, caching
+its access token until shortly before expiry. The runner and viewer obtain their own access
+tokens automatically; only one OAuth application's credentials need to be configured.
+If credentials are missing or the official API lookup fails, the runner falls back to
+the existing metadata mirrors. Beatmapset downloads still use mirrors.
+`OSU_API_V1_KEY` is no longer used and can be removed from existing `.env` files.
+
+Metadata mirrors are tried in order: Nerinyan, osu.direct, Mino, then
+[Hinamizawa](https://mirror.hinamizawa.ai/docs). The default beatmapset download order is osu.direct,
+Nerinyan, osu!gatari, Mino, [Nekoha](https://mirror.nekoha.moe/),
+[BeatConnect](https://beatconnect.io/), [Sayobot](https://osu.sayobot.cn/), [osu!dl](https://osudl.org/),
+[Mirria](https://mirror.lisek.cc/docs), then Hinamizawa.
+
+Download layers are adapted from the MD5 lookup response:
+
+| Metadata | First download sources |
+|----------|------------------------|
+| Ranked, approved, loved | osu.direct, then Nekoha |
+| Graveyard, pending, WIP | Nekoha, then osu.direct |
+| Has video | Mirria first, then the status-specific order |
+| Missing or unrecognised status | Probe the ordinary mirrors together |
+
+Each priority source above is a separate layer. osu.direct is attempted directly
+for ranked, approved, and loved sets; other priority sources are probed first.
+The remaining ordinary mirrors are probed concurrently, and the first to return
+ZIP bytes is selected for a full download. Pending probes are cancelled and drained
+before downloading. A probe requests `Range: bytes=0-3`, accepts HTTP 200 or 206,
+and reads only four bytes, with a 6-second total timeout (3 seconds for connection
+and socket reads). Servers that ignore Range are supported; HTML error pages are
+rejected even with HTTP 200. Full downloads also reject non-ZIP responses.
+
+Hinamizawa aggregates other mirrors and is always attempted last, without probing.
+Status and video flags are optional; no extra metadata
+requests are made to fill missing fields. Each replay keeps its own provider order,
+including retries when the renderer reports `Beatmap not found`. A replay also keeps
+its own set of attempted providers: failed probes and every started full download
+are excluded from subsequent attempts. Cancelled probes and successful probes whose
+provider has not downloaded yet remain candidates. Retries search all remaining
+providers, including those earlier in the list than the previous winner; retrying
+a replay as a new render starts with a fresh set. Exclusions apply to the configured
+providers; upstream choices inside an aggregator are controlled by that service.
+Maps already in the local Realm still skip lookup and download.
+
+Hinamizawa uses `/api/v2/md5/{md5}` for
+metadata and `/api/v1/hinai/d/{id}` for `.osz` bytes, since its plain `/d/{id}` returns
+JSON by default. No additional credentials are needed. Requests identify the runner
+with a descriptive `User-Agent`; set `USER_AGENT` to override it.
+Nekoha uses `/api/download/{id}` for `.osz` bytes. Its documented API has no MD5
+lookup, so it is registered only as a download provider.
+Sayobot uses `/beatmaps/download/full/{id}` on `txy1.sayobot.cn`; osu!dl uses
+`/s/{id}`. Both are download providers without additional credentials, and their
+redirects are followed automatically. osu!dl mirrors ranked, approved, and loved
+sets; some copyright-restricted archives omit audio and image assets.
+Mirria uses `/d/{id}` and includes video by default.
+BeatConnect uses the direct `/b/{id}` archive download without API credentials;
+it is registered only as a download provider.
 
 ### Render settings added in v0.11.0-pre
 

@@ -15,7 +15,12 @@ from datetime import datetime
 from typing import Dict, Optional
 import os
 import orv_config_manager
-from providers import build_beatmap_providers
+from providers import (
+    BeatmapDownloadState,
+    build_beatmap_providers,
+    download_with_fallback,
+    order_beatmapset_providers,
+)
 from realm_reader import OsuLazerRealmReader
 
 # Configure logging
@@ -31,6 +36,9 @@ RENDER_OUTPUT_DIR = "renders"
 TEMP_DIR = "temp"
 
 ORV_EXEC = os.getenv("ORV_EXEC", r"/app/osu-replay-viewer/osu-replay-viewer")
+USER_AGENT = (os.getenv("USER_AGENT") or "").strip() or (
+    "osubot-orv-runner (+https://github.com/Airkek/osubot-orv-runner)"
+)
 
 Path(RENDER_OUTPUT_DIR).mkdir(exist_ok=True)
 
@@ -129,7 +137,7 @@ class RenderManager:
     async def _process_render(self, render_id: int, replay_path: str, config_path: str, skin: str, custom_skin: bool):
         logger.info(f"Processing render {render_id}")
         # Process replay and download beatmap
-        beatmap_path, beatmapset_id, beatmapset_provider_idx = await self.process_replay_file(
+        beatmap_path, download_state = await self.process_replay_file(
             replay_path
         )
 
@@ -173,8 +181,8 @@ class RenderManager:
                 "Starting render for %s (attempt=%s beatmapset_provider=%s)",
                 render_id,
                 attempt,
-                self._beatmapset_providers[beatmapset_provider_idx].name
-                if beatmap_path and beatmapset_provider_idx < len(self._beatmapset_providers)
+                download_state.current_provider
+                if download_state is not None
                 else "none",
             )
             stdout, stderr, proc, timed_out = await run_with_timeout(cmd, timeout=900)
@@ -183,16 +191,8 @@ class RenderManager:
                 raise RenderException("Renderer killed due to 15min timeout", stdout, stderr)
 
             stderr_text = stderr.decode(errors="ignore") if stderr else ""
-            if "Beatmap not found" in stderr_text and beatmap_path and beatmapset_id is not None:
-                next_idx = beatmapset_provider_idx + 1
-                if next_idx >= len(self._beatmapset_providers):
-                    raise RenderException(
-                        "Renderer error: Beatmap not found in beatmapset. Tried all beatmapset providers.",
-                        stdout,
-                        stderr,
-                    )
-
-                # Clean up old .osz and retry with next provider(s).
+            if "Beatmap not found" in stderr_text and beatmap_path and download_state is not None:
+                # Clean up old .osz and retry with next provider(s)
                 try:
                     if Path(beatmap_path).exists():
                         Path(beatmap_path).unlink()
@@ -200,14 +200,14 @@ class RenderManager:
                     pass
 
                 logger.warning(
-                    "Beatmap not found in downloaded beatmapset_id=%s; switching beatmapset provider %s -> %s",
-                    beatmapset_id,
-                    self._beatmapset_providers[beatmapset_provider_idx].name,
-                    self._beatmapset_providers[next_idx].name,
+                    "Beatmap not found in downloaded beatmapset_id=%s; excluding tried providers %s",
+                    download_state.metadata.beatmapset_id,
+                    sorted(download_state.attempted),
                 )
-                beatmap_path, beatmapset_provider_idx = await self._download_beatmapset_with_fallback(
-                    beatmapset_id, start_at=next_idx
-                )
+                try:
+                    beatmap_path = await self._download_beatmapset_with_fallback(download_state)
+                except RenderException as error:
+                    raise RenderException(str(error), stdout, stderr) from error
                 continue
 
             break
@@ -289,37 +289,22 @@ class RenderManager:
         return path
 
     async def _download_beatmapset_with_fallback(
-        self, beatmapset_id: int, start_at: int = 0
-    ) -> tuple[Path, int]:
+        self, state: BeatmapDownloadState
+    ) -> Path:
         beatmap_path = Path(TEMP_DIR) / f"{uuid.uuid4()}.osz"
 
         timeout = aiohttp.ClientTimeout(total=40, connect=10, sock_read=40)
-        headers = {}
-        ua = (os.getenv("USER_AGENT") or "").strip()
-        if ua:
-            headers["User-Agent"] = ua
+        headers = {"User-Agent": USER_AGENT}
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            for idx in range(start_at, len(self._beatmapset_providers)):
-                provider = self._beatmapset_providers[idx]
-                try:
-                    logger.info(
-                        "Downloading beatmapset %s via %s", beatmapset_id, provider.name
-                    )
-                    ok = await provider.download_beatmapset(
-                        session, beatmapset_id, beatmap_path
-                    )
-                    if not ok:
-                        raise Exception("provider refused (not found / bad status)")
-                    logger.info("Beatmap saved: %s (provider=%s)", beatmap_path, provider.name)
-                    return beatmap_path, idx
-                except Exception as e:
-                    logger.error(f"Error downloading from {provider.name}: {e}")
-                    continue
+            if await download_with_fallback(session, state, beatmap_path):
+                return beatmap_path
 
         raise RenderException("Failed to download beatmapset from all providers")
 
-    async def process_replay_file(self, replay_path: str) -> tuple[Optional[Path], Optional[int], int]:
+    async def process_replay_file(
+        self, replay_path: str
+    ) -> tuple[Optional[Path], Optional[BeatmapDownloadState]]:
         logger.info(f"Parsing replay: {replay_path}")
         try:
             replay = Replay.from_path(replay_path)
@@ -332,15 +317,12 @@ class RenderManager:
         imported = await self._realm_reader.has_beatmap(replay.beatmap_hash)
         if imported:
             logger.info(f"Beatmap hash found in osu!lazer Realm, skipping download: {replay.beatmap_hash}")
-            return None, None, 0
+            return None, None
 
         beatmapset_id: Optional[int] = None
 
         timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_read=20)
-        headers = {}
-        ua = (os.getenv("USER_AGENT") or "").strip()
-        if ua:
-            headers["User-Agent"] = ua
+        headers = {"User-Agent": USER_AGENT}
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             for provider in self._metadata_providers:
@@ -364,8 +346,15 @@ class RenderManager:
             if not beatmapset_id:
                 raise RenderException("Could not get beatmap info from metadata providers")
 
-        beatmap_path, idx = await self._download_beatmapset_with_fallback(beatmapset_id, start_at=0)
-        return beatmap_path, beatmapset_id, idx
+        beatmapset_providers = order_beatmapset_providers(self._beatmapset_providers, res)
+        logger.info(
+            "Download order for beatmapset %s (status=%s video=%s): %s",
+            beatmapset_id, res.status, res.has_video,
+            [provider.name for provider in beatmapset_providers],
+        )
+        state = BeatmapDownloadState(res, beatmapset_providers)
+        beatmap_path = await self._download_beatmapset_with_fallback(state)
+        return beatmap_path, state
 
     async def delete_after_delay(self, output_path: Path, render_id: int):
         await asyncio.sleep(900)  # 15 minutes

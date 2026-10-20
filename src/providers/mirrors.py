@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -14,6 +16,18 @@ from .types import BeatmapLookupResult, IBeatmapsetProvider, IMetadataProvider
 class _HttpMirror:
     base_url: str
     name: str
+
+
+def _routing_metadata(data: dict) -> dict:
+    beatmapset = data.get("beatmapset")
+    if not isinstance(beatmapset, dict):
+        beatmapset = {}
+    status = beatmapset.get("status") or data.get("status")
+    video = beatmapset.get("video", data.get("video"))
+    return {
+        "status": status if isinstance(status, str) else None,
+        "has_video": video if isinstance(video, bool) else None,
+    }
 
 
 class MirrorV2Md5MetadataProvider(IMetadataProvider):
@@ -37,11 +51,14 @@ class MirrorV2Md5MetadataProvider(IMetadataProvider):
                 return None
             data = await resp.json()
 
+        if not isinstance(data, dict):
+            return None
+
         beatmapset_id = data.get("beatmapset_id")
         if not beatmapset_id:
             return None
 
-        beatmap_id = data.get("beatmap_id")
+        beatmap_id = data.get("beatmap_id", data.get("id"))
         try:
             beatmapset_id_i = int(beatmapset_id)
         except Exception:
@@ -55,24 +72,41 @@ class MirrorV2Md5MetadataProvider(IMetadataProvider):
                 beatmap_id_i = None
 
         return BeatmapLookupResult(
-            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name
+            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name,
+            **_routing_metadata(data),
         )
 
 
 class MirrorDownloadBeatmapsetProvider(IBeatmapsetProvider):
     """
-    Simple cheesegul mirror:
-      GET {base}/d/{beatmapset_id} -> .osz bytes
+    Download a beatmapset archive, defaulting to the CheeseGull download path:
+      GET {base}/{download_path}/{beatmapset_id} -> .osz bytes
     """
 
-    def __init__(self, base_url: str, name: str):
+    def __init__(self, base_url: str, name: str, download_path: str = "d"):
         self._mirror = _HttpMirror(base_url=base_url.rstrip("/"), name=name)
+        self._download_path = download_path.strip("/")
         self.name = name
+
+    async def probe_beatmapset(
+        self, session: aiohttp.ClientSession, beatmapset_id: int
+    ) -> bool:
+        url = f"{self._mirror.base_url}/{self._download_path}/{beatmapset_id}"
+        timeout = aiohttp.ClientTimeout(total=6, connect=3, sock_read=3)
+        async with session.get(
+            url, headers={"Range": "bytes=0-3"}, timeout=timeout
+        ) as resp:
+            if resp.status not in (200, 206):
+                return False
+            try:
+                return await resp.content.readexactly(4) == b"PK\x03\x04"
+            except asyncio.IncompleteReadError:
+                return False
 
     async def download_beatmapset(
         self, session: aiohttp.ClientSession, beatmapset_id: int, dest_path: Path
     ) -> bool:
-        url = f"{self._mirror.base_url}/d/{beatmapset_id}"
+        url = f"{self._mirror.base_url}/{self._download_path}/{beatmapset_id}"
         async with session.get(url) as resp:
             if resp.status == 404:
                 return False
@@ -80,37 +114,89 @@ class MirrorDownloadBeatmapsetProvider(IBeatmapsetProvider):
                 return False
             content = await resp.read()
 
+        if not content.startswith(b"PK\x03\x04"):
+            return False
+
         async with aiofiles.open(dest_path, "wb") as f:
             await f.write(content)
         return True
 
 
-class OsuOfficialV1MetadataProvider(IMetadataProvider):
+class OsuOfficialV2MetadataProvider(IMetadataProvider):
     """
-    Official osu! API v1 beatmaps lookup:
-      GET https://osu.ppy.sh/api/get_beatmaps?k=APIKEY&h=MD5
+    Official osu! API v2 beatmap lookup using public client credentials:
+      GET https://osu.ppy.sh/api/v2/beatmaps/lookup?checksum=MD5
     """
 
-    def __init__(self, api_key: str):
-        self.name = "osu-official-v1"
-        self._api_key = api_key
+    def __init__(self, client_id: str, client_secret: str):
+        self.name = "osu-official-v2"
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._access_token: Optional[str] = None
+        self._token_expires_at = 0.0
+        self._token_lock = asyncio.Lock()
+
+    async def _get_access_token(self, session: aiohttp.ClientSession) -> Optional[str]:
+        async with self._token_lock:
+            if self._access_token and time.monotonic() < self._token_expires_at:
+                return self._access_token
+
+            async with session.post(
+                "https://osu.ppy.sh/oauth/token",
+                data={
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "grant_type": "client_credentials",
+                    "scope": "public",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+            if not isinstance(data, dict):
+                return None
+            token = data.get("access_token")
+            try:
+                expires_in = float(data.get("expires_in", 0))
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(token, str) or not token or not expires_in > 0:
+                return None
+
+            self._access_token = token
+            self._token_expires_at = time.monotonic() + expires_in - min(30, expires_in / 2)
+            return token
 
     async def lookup_by_md5(
         self, session: aiohttp.ClientSession, md5: str
     ) -> Optional[BeatmapLookupResult]:
-        url = "https://osu.ppy.sh/api/get_beatmaps"
-        params = {"k": self._api_key, "h": md5}
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
+        url = "https://osu.ppy.sh/api/v2/beatmaps/lookup"
+        for attempt in range(2):
+            token = await self._get_access_token(session)
+            if not token:
                 return None
-            data = await resp.json()
 
-        if not isinstance(data, list) or not data:
+            async with session.get(
+                url,
+                params={"checksum": md5},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            ) as resp:
+                if resp.status == 401:
+                    if self._access_token == token:
+                        self._access_token = None
+                    if attempt == 0:
+                        continue
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+            break
+
+        if not isinstance(data, dict):
             return None
 
-        first = data[0]
-        beatmapset_id = first.get("beatmapset_id")
-        beatmap_id = first.get("beatmap_id")
+        beatmapset_id = data.get("beatmapset_id")
+        beatmap_id = data.get("id")
         if not beatmapset_id:
             return None
 
@@ -127,7 +213,8 @@ class OsuOfficialV1MetadataProvider(IMetadataProvider):
                 beatmap_id_i = None
 
         return BeatmapLookupResult(
-            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name
+            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name,
+            **_routing_metadata(data),
         )
 
 
@@ -175,5 +262,6 @@ class NerinyanV2LookupMetadataProvider(IMetadataProvider):
                 beatmap_id_i = None
 
         return BeatmapLookupResult(
-            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name
+            beatmapset_id=beatmapset_id_i, beatmap_id=beatmap_id_i, provider=self.name,
+            **_routing_metadata(data),
         )
