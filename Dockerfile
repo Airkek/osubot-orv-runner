@@ -25,8 +25,8 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 WORKDIR /app
 
-ARG OSU_VIEWER_VERSION=v0.10.1
-ARG OSU_VIEWER_BUILD=Debug
+ARG OSU_VIEWER_VERSION=latest
+ARG OSU_VIEWER_BUILD=Release
 ARG OSU_VIEWER_ARCH=x64
 
 ARG OSU_VIEWER_PACKAGE=app-${OSU_VIEWER_BUILD}-linux-${OSU_VIEWER_ARCH}.tar.gz

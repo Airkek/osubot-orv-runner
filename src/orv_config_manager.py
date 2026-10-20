@@ -5,6 +5,10 @@ FFMPEG_PRESET = "p7"
 FFMPEG_EXEC = "ffmpeg"
 FFMPEG_LIBS = ""
 FFMPEG_BITRATE = "100M"
+FFMPEG_RATE_CONTROL = None
+FFMPEG_QUALITY = None
+FFMPEG_MAX_BITRATE = None
+FFMPEG_BUFFER_SIZE = None
 FFMPEG_MODE = "Pipe"
 FFMPEG_CUDA = False
 
@@ -25,6 +29,7 @@ class Config:
     effects_volume: float = 0.5
     master_volume: float = 0.5
     skip_intro: bool = True
+    show_leaderboard: bool = False
 
 def generate_config(config: Config) -> str:
     config_dict = {
@@ -40,6 +45,10 @@ def generate_config(config: Config) -> str:
             "video_encoder": FFMPEG_CODEC,
             "video_encoder_preset": FFMPEG_PRESET,
             "video_encoder_bitrate": FFMPEG_BITRATE,
+            "video_rate_control": FFMPEG_RATE_CONTROL,
+            "video_quality": FFMPEG_QUALITY,
+            "video_encoder_max_bitrate": FFMPEG_MAX_BITRATE,
+            "video_encoder_buffer_size": FFMPEG_BUFFER_SIZE,
             "use_cuda_if_possible": FFMPEG_CUDA
         },
         "output_options": {
@@ -48,6 +57,7 @@ def generate_config(config: Config) -> str:
         },
         "game_settings": {
             "skip_intro": config.skip_intro,
+            "show_leaderboard": config.show_leaderboard,
             "background_dim": config.background_dim,
             "scroll_speed": config.scroll_speed,
             "show_storyboard_or_video": config.show_storyboard_or_video,

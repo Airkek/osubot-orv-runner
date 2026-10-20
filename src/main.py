@@ -415,7 +415,8 @@ async def create_render(
         globalVolume: int = Form(50),
         musicVolume: int = Form(50),
         hitsoundVolume: int = Form(50),
-        scrollSpeed: float = Form(26.0, ge=1.0, le=40.0)
+        scrollSpeed: float = Form(26.0, ge=1.0, le=40.0),
+        showScoreboard: bool = Form(False)
 ):
     # Save replay file
     Path(TEMP_DIR).mkdir(exist_ok=True)
@@ -438,6 +439,7 @@ async def create_render(
     config.music_volume = musicVolume / 100
     config.effects_volume = hitsoundVolume / 100
     config.scroll_speed = scrollSpeed
+    config.show_leaderboard = showScoreboard
 
     async with aiofiles.open(config_path, "w") as f:
         content = orv_config_manager.generate_config(config)

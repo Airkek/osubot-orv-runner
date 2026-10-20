@@ -3,8 +3,8 @@
 
 This project provides an API for rendering osu! replays using
 [osu-replay-viewer-continued](https://github.com/Airkek/osu-replay-viewer-continued).
-The Docker image uses viewer [v0.10.1](https://github.com/Airkek/osu-replay-viewer-continued/releases/tag/v0.10.1),
-based on stable osu!lazer 2026.1005.0 and .NET 10. The viewer archive is self-contained;
+The Docker image downloads the [latest stable viewer release](https://github.com/Airkek/osu-replay-viewer-continued/releases/latest)
+by default (`OSU_VIEWER_VERSION=latest`, `OSU_VIEWER_BUILD=Release`). The viewer archive is self-contained;
 the Docker image includes its ICU dependency, so no separate .NET installation is required.
 It was originally intended to be used together with
 [osubot-telegram](https://github.com/Airkek/osubot-telegram).
@@ -14,7 +14,7 @@ It was originally intended to be used together with
 1. Copy the example environment file and configure it:
    ```bash
    cp .env.example .env
-   # Edit .env and set a secure POSTGRES_PASSWORD
+   # Edit .env to set paths and optional osu! API credentials
    ```
 
 2. Run with Docker:
@@ -22,9 +22,12 @@ It was originally intended to be used together with
    docker-compose up -d --build
    ```
 
-   Run the same command after pulling updates to rebuild the image with the pinned viewer release.
+   Run the same command after pulling runner updates. To fetch a newer viewer release when using
+   `latest`, rebuild with `docker compose build --no-cache`, then run `docker compose up -d`.
+   GitHub's `latest` endpoint excludes pre-releases; to select one explicitly, use
+   `docker compose build --no-cache --build-arg OSU_VIEWER_VERSION=v0.11.0-pre`.
 
-The default viewer build remains `Debug` on Linux x64. Its Realm database is now
+The default viewer build is `Release` on Linux x64. Its Realm database is now
 `client_52.realm`; the viewer migrates an existing `client_51.realm` on first startup.
 Automatic database discovery supports both versions. If you set `OSU_LAZER_REALM_PATH`
 explicitly, update it to the new filename after migration.
@@ -35,9 +38,61 @@ Environment variables can be set in `.env` file:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `POSTGRES_USER` | PostgreSQL username | `orv` |
-| `POSTGRES_PASSWORD` | PostgreSQL password (required) | - |
-| `POSTGRES_DB` | PostgreSQL database name | `orv_db` |
+| `OSU_API_CLIENT_ID` | osu! API v2 OAuth application Client ID | unset |
+| `OSU_API_CLIENT_SECRET` | osu! API v2 OAuth application Client Secret | unset |
+| `OSU_API_V1_KEY` | Optional API v1 key for beatmap metadata lookup | unset |
+
+Register an [osu! OAuth application](https://osu.ppy.sh/home/account/edit#new-oauth-application)
+and put its Client ID and Client Secret in `.env`. Docker Compose passes them to the runner,
+and the viewer subprocess inherits them as environment variables. They are not written into
+per-render JSON configs or accepted from render requests. The viewer uses the API v2
+`client_credentials` grant with `public` scope; a saved osu!lazer login is not required.
+The API v1 metadata key is independent and does not enable the viewer leaderboard.
+
+### Render settings added in v0.11.0-pre
+
+`POST /renders` accepts the optional multipart field `showScoreboard` (default `false`),
+matching the name and default in the [o!rdr API](https://ordr.issou.best/docs/).
+It maps to the viewer's `game_settings.show_leaderboard`.
+
+```bash
+curl -X POST http://localhost:9732/renders \
+  -F replayFile=@replay.osr \
+  -F showScoreboard=true
+```
+
+The scoreboard needs API v2 credentials. If credentials are missing or the API is unavailable,
+the viewer continues rendering without it. Existing clients can omit this field.
+
+The runner implements a subset of o!rdr render settings. Matching options use o!rdr's field
+names where supported by the viewer; this does not imply full o!rdr API compatibility.
+
+### Local encoder settings
+
+Encoder settings are managed locally in `src/orv_config_manager.py`, independently of render
+requests:
+
+| Constant | Viewer config under `ffmpeg_options` | Default |
+|----------|--------------------------------------|---------|
+| `FFMPEG_RATE_CONTROL` | `video_rate_control` | `None` |
+| `FFMPEG_QUALITY` | `video_quality` | `None` |
+| `FFMPEG_BITRATE` | `video_encoder_bitrate` | `"100M"` |
+| `FFMPEG_MAX_BITRATE` | `video_encoder_max_bitrate` | `None` |
+| `FFMPEG_BUFFER_SIZE` | `video_encoder_buffer_size` | `None` |
+
+`FFMPEG_RATE_CONTROL` accepts `"ConstantQuantizer"`, `"ConstantQuality"`, `"VariableBitrate"`,
+and `"ConstantBitrate"`. The runner uses `h264_nvenc`: leaving rate control and quality unset
+retains the viewer's CQP 21 default. Lower quality values mean higher quality (0–51).
+Do not combine quality with VBR/CBR, or bitrate limits with CQP; the viewer rejects incompatible
+settings. For 20 Mbit/s VBR, set `FFMPEG_RATE_CONTROL = "VariableBitrate"`,
+`FFMPEG_BITRATE = "20M"`, `FFMPEG_MAX_BITRATE = "30M"`, and `FFMPEG_BUFFER_SIZE = "40M"`.
+
+### Tests
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
 
 ## Requirements
 
