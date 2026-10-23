@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.params import Form
 from fastapi.responses import FileResponse
-from osrparse import Replay
 import aiohttp
 import asyncio
 from pathlib import Path
@@ -22,6 +21,7 @@ from providers import (
     order_beatmapset_providers,
 )
 from realm_reader import OsuLazerRealmReader
+from replay_header import read_replay_hashes
 
 # Configure logging
 logging.basicConfig(
@@ -307,7 +307,7 @@ class RenderManager:
     ) -> tuple[Optional[Path], Optional[BeatmapDownloadState]]:
         logger.info(f"Parsing replay: {replay_path}")
         try:
-            replay = Replay.from_path(replay_path)
+            replay = read_replay_hashes(replay_path)
             logger.info(f"Replay hash: {replay.replay_hash}")
             logger.info(f"Beatmap hash: {replay.beatmap_hash}")
         except Exception as e:

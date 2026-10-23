@@ -1,6 +1,5 @@
 fastapi==0.129.0
 uvicorn==0.40.0
-osrparse==7.0.1
 aiohttp==3.13.3
 python-multipart==0.0.22
 aiofiles==25.1.0

@@ -140,7 +140,7 @@ class OfficialMetadataTests(unittest.IsolatedAsyncioTestCase):
         manager._realm_reader.has_beatmap = AsyncMock(return_value=False)
         manager._download_beatmapset_with_fallback = AsyncMock(return_value=Path("beatmap.osz"))
         self.session.post.return_value = response(401)
-        with patch.object(main.Replay, "from_path", return_value=SimpleNamespace(
+        with patch.object(main, "read_replay_hashes", return_value=SimpleNamespace(
             replay_hash="replay-md5", beatmap_hash="beatmap-md5"
         )), patch.object(main.aiohttp, "ClientSession") as session_factory:
             session_factory.return_value.__aenter__.return_value = self.session
@@ -355,7 +355,7 @@ class AdaptiveRenderFallbackTests(unittest.IsolatedAsyncioTestCase):
             Path(cmd[cmd.index("-O") + 1]).write_bytes(b"video")
             return b"", b"", SimpleNamespace(returncode=0), False
 
-        with patch.object(self.main.Replay, "from_path", return_value=SimpleNamespace(
+        with patch.object(self.main, "read_replay_hashes", return_value=SimpleNamespace(
             replay_hash="replay-md5", beatmap_hash="beatmap-md5"
         )), patch.object(self.main, "run_with_timeout", side_effect=render), \
              patch.object(self.main.aiohttp, "ClientSession"):
@@ -372,7 +372,7 @@ class AdaptiveRenderFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.manager._download_beatmapset_with_fallback = AsyncMock()
         metadata = SimpleNamespace(name="metadata", lookup_by_md5=AsyncMock())
         self.manager._metadata_providers = [metadata]
-        with patch.object(self.main.Replay, "from_path", return_value=SimpleNamespace(
+        with patch.object(self.main, "read_replay_hashes", return_value=SimpleNamespace(
             replay_hash="replay-md5", beatmap_hash="beatmap-md5"
         )):
             self.assertEqual(await self.manager.process_replay_file("replay.osr"), (None, None))
