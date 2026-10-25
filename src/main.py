@@ -193,6 +193,12 @@ class RenderManager:
                 raise RenderException("Renderer killed due to 15min timeout", stdout, stderr)
 
             stderr_text = stderr.decode(errors="ignore") if stderr else ""
+            for line in stderr_text.splitlines():
+                if line.startswith("[Replay] "):
+                    message = line.removeprefix("[Replay] ").strip()
+                    if message:
+                        raise RenderException(f"Renderer error: {message}", stdout, stderr)
+
             if "Beatmap not found" in stderr_text and beatmap_path and download_state is not None:
                 # Clean up old .osz and retry with next provider(s)
                 try:
