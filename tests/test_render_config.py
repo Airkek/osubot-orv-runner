@@ -132,5 +132,47 @@ class ViewerEnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stdout.splitlines(), [b"12345", b"test-secret"])
 
 
+class RenderDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_preserves_output_and_saves_it_in_failure_log(self):
+        stdout, stderr, process, timed_out = await main.run_with_timeout(
+            [sys.executable, "-c", (
+                "import sys, time; "
+                "print('renderer stdout', flush=True); "
+                "print('renderer stderr', file=sys.stderr, flush=True); "
+                "time.sleep(60)"
+            )],
+            timeout=1,
+        )
+        self.assertTrue(timed_out)
+        self.assertIsNotNone(process.returncode)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(stdout, b"renderer stdout\n")
+        self.assertEqual(stderr, b"renderer stderr\n")
+        log = await self.save_error(main.RenderException("Renderer timed out", stdout, stderr))
+        self.assertIn(b"STDOUT=====================\n\nrenderer stdout\n", log)
+        self.assertIn(b"STDERR=====================\n\nrenderer stderr\n", log)
+
+    async def test_failure_log_marks_empty_streams(self):
+        log = await self.save_error(main.RenderException("Renderer timed out", b"", b""))
+        self.assertIn(b"STDOUT=====================\n\n(empty)\n", log)
+        self.assertIn(b"STDERR=====================\n\n(empty)\n", log)
+
+    async def save_error(self, error):
+        with tempfile.TemporaryDirectory() as directory:
+            previous_directory = os.getcwd()
+            try:
+                os.chdir(directory)
+                replay = Path("replay.osr")
+                replay.write_bytes(b"replay-content")
+                manager = main.RenderManager()
+                await manager._handle_render_error(59, str(replay), error)
+                failure = next(Path("failed_replays").iterdir())
+                self.assertEqual((failure / "replay.osr").read_bytes(), b"replay-content")
+                self.assertEqual(manager.renders[59], f"fail\n{error}")
+                return (failure / "log.txt").read_bytes()
+            finally:
+                os.chdir(previous_directory)
+
+
 if __name__ == "__main__":
     unittest.main()

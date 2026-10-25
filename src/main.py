@@ -67,13 +67,15 @@ async def run_with_timeout(cmd, timeout):
         stderr=asyncio.subprocess.PIPE
     )
 
+    communicate_task = asyncio.create_task(proc.communicate())
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+        stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate_task), timeout)
     except asyncio.TimeoutError:
         logger.warning(f"Process timed out after {timeout} seconds. Killing it.")
-        proc.kill()
+        if proc.returncode is None:
+            proc.kill()
         try:
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await communicate_task
         except Exception as e:
             await proc.wait()
             tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -240,15 +242,11 @@ class RenderManager:
             f.write(tb)
 
         if isinstance(error, RenderException):
-            if error.stdout or error.stderr:
-                with open(render_error_path, "ab") as f:
-                    if error.stdout:
-                        f.write(b"\n\n=====================STDOUT=====================\n\n")
-                        f.write(error.stdout)
-                    
-                    if error.stderr:
-                        f.write(b"\n\n=====================STDERR=====================\n\n")
-                        f.write(error.stderr)
+            with open(render_error_path, "ab") as f:
+                f.write(b"\n\n=====================STDOUT=====================\n\n")
+                f.write(error.stdout or b"(empty)\n")
+                f.write(b"\n\n=====================STDERR=====================\n\n")
+                f.write(error.stderr or b"(empty)\n")
         
         shutil.copy(replay_path, replay_copy_path)
         self.renders[render_id] = f"fail\n{str(error)}"
