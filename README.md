@@ -158,6 +158,10 @@ python -m unittest discover -s tests -v
 
 ## Requirements
 
+The container uses Ubuntu 26.04 with CUDA 13.4.3, the distribution's FFmpeg package,
+and Python 3.14 in a virtual environment. The host NVIDIA driver must support the
+CUDA image and the NVENC API used by that FFmpeg build.
+
 - NVIDIA GPU with CUDA support (for NVENC encoding)
 - Docker and Docker Compose
 - NVIDIA Container Toolkit

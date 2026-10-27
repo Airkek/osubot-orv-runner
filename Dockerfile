@@ -1,9 +1,9 @@
-FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+FROM nvidia/cuda:13.4.3-devel-ubuntu26.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3-pip \
+    python3 \
+    python3-venv \
     ffmpeg \
     x11-apps \
     libxext6 \
@@ -14,14 +14,16 @@ RUN apt-get update && apt-get install -y \
     libglvnd0 \
     libglvnd-dev \
     libgl1 \
-    libicu70 \
+    libicu78 \
     wget \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+# Install Python dependencies in an isolated environment
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 WORKDIR /app
 
@@ -45,7 +47,7 @@ RUN if [ "${OSU_VIEWER_VERSION}" = "latest" ]; then \
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy application files (include subdirectories like src/providers)
 COPY src/ /app/
