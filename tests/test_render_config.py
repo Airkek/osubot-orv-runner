@@ -58,14 +58,18 @@ class RenderConfigTests(unittest.TestCase):
         self.assertEqual(self.config["game_settings"]["scroll_speed"], 30.0)
         ffmpeg = self.config["ffmpeg_options"]
         self.assertEqual(ffmpeg["video_encoder"], "h264_nvenc")
+        self.assertEqual(ffmpeg["video_encoder_preset"], "p7")
         self.assertEqual(ffmpeg["video_encoder_bitrate"], "100M")
-        self.assertIsNone(ffmpeg["video_rate_control"])
-        self.assertIsNone(ffmpeg["video_quality"])
+        self.assertEqual(ffmpeg["video_rate_control"], "ConstantQuantizer")
+        self.assertEqual(ffmpeg["video_quality"], 26)
+        self.assertEqual(ffmpeg["video_encoder_gop_size"], 450)
+        self.assertEqual(ffmpeg["audio_encoder_bitrate"], 160000)
 
     def test_scoreboard_and_local_vbr_reach_queued_viewer_config(self):
         with patch.multiple(
             main.orv_config_manager,
             FFMPEG_RATE_CONTROL="VariableBitrate",
+            FFMPEG_QUALITY=None,
             FFMPEG_BITRATE="20M",
             FFMPEG_MAX_BITRATE="30M",
             FFMPEG_BUFFER_SIZE="40M",
@@ -98,11 +102,17 @@ class RenderConfigTests(unittest.TestCase):
             videoEncoderBitrate="1M",
             videoEncoderMaxBitrate="2M",
             videoEncoderBufferSize="3M",
+            videoEncoderGopSize="60",
+            audioEncoderBitrate="64000",
         )
         self.assertEqual(response.status_code, 200)
         ffmpeg = self.config["ffmpeg_options"]
         self.assertEqual(ffmpeg["video_encoder_bitrate"], "100M")
-        for field in ("video_rate_control", "video_quality", "video_encoder_max_bitrate", "video_encoder_buffer_size"):
+        self.assertEqual(ffmpeg["video_rate_control"], "ConstantQuantizer")
+        self.assertEqual(ffmpeg["video_quality"], 26)
+        self.assertEqual(ffmpeg["video_encoder_gop_size"], 450)
+        self.assertEqual(ffmpeg["audio_encoder_bitrate"], 160000)
+        for field in ("video_encoder_max_bitrate", "video_encoder_buffer_size"):
             self.assertIsNone(ffmpeg[field])
 
     def test_public_schema_uses_ordr_scoreboard_and_no_encoder_controls(self):
@@ -110,7 +120,7 @@ class RenderConfigTests(unittest.TestCase):
         body_ref = schema["paths"]["/renders"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]["$ref"]
         fields = schema["components"]["schemas"][body_ref.rsplit("/", 1)[-1]]["properties"]
         self.assertIs(fields["showScoreboard"]["default"], False)
-        for field in ("showLeaderboard", "videoRateControl", "videoQuality", "videoEncoderBitrate", "videoEncoderMaxBitrate", "videoEncoderBufferSize"):
+        for field in ("showLeaderboard", "videoRateControl", "videoQuality", "videoEncoderBitrate", "videoEncoderMaxBitrate", "videoEncoderBufferSize", "videoEncoderGopSize", "audioEncoderBitrate"):
             self.assertNotIn(field, fields)
 
     def test_environment_credentials_are_not_written_to_render_config(self):

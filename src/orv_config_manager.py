@@ -5,10 +5,12 @@ FFMPEG_PRESET = "p7"
 FFMPEG_EXEC = "ffmpeg"
 FFMPEG_LIBS = ""
 FFMPEG_BITRATE = "100M"
-FFMPEG_RATE_CONTROL = None
-FFMPEG_QUALITY = None
+FFMPEG_RATE_CONTROL = "ConstantQuantizer"
+FFMPEG_QUALITY = 26
 FFMPEG_MAX_BITRATE = None
 FFMPEG_BUFFER_SIZE = None
+FFMPEG_GOP_SIZE = 450
+FFMPEG_AUDIO_BITRATE = 160000
 FFMPEG_MODE = "Pipe"
 FFMPEG_CUDA = False
 
@@ -49,6 +51,8 @@ def generate_config(config: Config) -> str:
             "video_quality": FFMPEG_QUALITY,
             "video_encoder_max_bitrate": FFMPEG_MAX_BITRATE,
             "video_encoder_buffer_size": FFMPEG_BUFFER_SIZE,
+            "video_encoder_gop_size": FFMPEG_GOP_SIZE,
+            "audio_encoder_bitrate": FFMPEG_AUDIO_BITRATE,
             "use_cuda_if_possible": FFMPEG_CUDA
         },
         "output_options": {

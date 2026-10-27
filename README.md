@@ -128,18 +128,26 @@ requests:
 
 | Constant | Viewer config under `ffmpeg_options` | Default |
 |----------|--------------------------------------|---------|
-| `FFMPEG_RATE_CONTROL` | `video_rate_control` | `None` |
-| `FFMPEG_QUALITY` | `video_quality` | `None` |
+| `FFMPEG_RATE_CONTROL` | `video_rate_control` | `"ConstantQuantizer"` |
+| `FFMPEG_QUALITY` | `video_quality` | `26` |
 | `FFMPEG_BITRATE` | `video_encoder_bitrate` | `"100M"` |
 | `FFMPEG_MAX_BITRATE` | `video_encoder_max_bitrate` | `None` |
 | `FFMPEG_BUFFER_SIZE` | `video_encoder_buffer_size` | `None` |
+| `FFMPEG_GOP_SIZE` | `video_encoder_gop_size` | `450` |
+| `FFMPEG_AUDIO_BITRATE` | `audio_encoder_bitrate` | `160000` |
 
 `FFMPEG_RATE_CONTROL` accepts `"ConstantQuantizer"`, `"ConstantQuality"`, `"VariableBitrate"`,
-and `"ConstantBitrate"`. The runner uses `h264_nvenc`: leaving rate control and quality unset
-retains the viewer's CQP 21 default. Lower quality values mean higher quality (0–51).
+and `"ConstantBitrate"`. The runner uses `h264_nvenc` with preset `p7` and CQP 26,
+matching o!rdr's regular NVENC settings. Lower quality values mean higher quality (0–51).
 Do not combine quality with VBR/CBR, or bitrate limits with CQP; the viewer rejects incompatible
-settings. For 20 Mbit/s VBR, set `FFMPEG_RATE_CONTROL = "VariableBitrate"`,
+settings. For 20 Mbit/s VBR, set `FFMPEG_RATE_CONTROL = "VariableBitrate"`, `FFMPEG_QUALITY = None`,
 `FFMPEG_BITRATE = "20M"`, `FFMPEG_MAX_BITRATE = "30M"`, and `FFMPEG_BUFFER_SIZE = "40M"`.
+
+GOP size is a positive frame count, or `None` to keep the encoder default. Audio bitrate is
+an integer in bits per second. These two fields require a viewer release that includes their
+support; older releases ignore them. To match o!rdr's regular NVENC settings, use
+`FFMPEG_RATE_CONTROL = "ConstantQuantizer"`, `FFMPEG_QUALITY = 26`,
+`FFMPEG_GOP_SIZE = 450`, and `FFMPEG_AUDIO_BITRATE = 160000`, keeping preset `p7`.
 
 ### Tests
 
