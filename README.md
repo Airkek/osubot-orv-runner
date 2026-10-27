@@ -32,6 +32,18 @@ The default viewer build is `Release` on Linux x64. Its Realm database is now
 Automatic database discovery supports both versions. If you set `OSU_LAZER_REALM_PATH`
 explicitly, update it to the new filename after migration.
 
+The container starts its own headless Weston compositor and forces the viewer to use native
+Wayland. The host does not need X11, XWayland, a Wayland compositor, or a connected monitor.
+NVIDIA Container Toolkit supplies the GPU driver libraries; `/dev/dri` provides the render
+device. No host display sockets or Xauthority files are mounted, and privileged mode and
+host IPC are not required.
+
+Startup checks OpenGL through Wayland/EGL and refuses to start the API unless the vendor is
+NVIDIA and the renderer is hardware accelerated. The Weston and EGL diagnostics appear in
+`docker compose logs`. The compositor is stopped with the runner, and the container exits
+if the compositor fails. `WESTON_WIDTH` and `WESTON_HEIGHT` optionally change its virtual
+output size (default `1920` by `1080`); render resolution is still controlled per request.
+
 ## Configuration
 
 Environment variables can be set in `.env` file:

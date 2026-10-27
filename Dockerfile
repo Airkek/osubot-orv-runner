@@ -5,11 +5,13 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
     ffmpeg \
-    x11-apps \
     libxext6 \
     libxrender-dev \
     libxrandr2 \
-    x11-utils \
+    weston \
+    libegl1 \
+    libgbm1 \
+    libwayland-egl1 \
     mesa-utils \
     libglvnd0 \
     libglvnd-dev \
@@ -51,6 +53,8 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy application files (include subdirectories like src/providers)
 COPY src/ /app/
+COPY docker/ /app/docker/
 
 # Default command
+ENTRYPOINT ["/bin/bash", "/app/docker/wayland-entrypoint.sh"]
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9732", "--loop", "asyncio"]
